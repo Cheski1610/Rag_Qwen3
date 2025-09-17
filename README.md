@@ -1,4 +1,4 @@
-# RAG_Qwen3
+# **RAG_Qwen3**
 
 Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (Retrieval-Augmented Generation) usando el modelo Qwen3 para embeddings y Ollama/Qwen3 para generación. A continuación se describen los archivos principales, su funcionalidad y las diferencias entre ellos.
 
