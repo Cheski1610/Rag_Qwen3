@@ -50,10 +50,12 @@ def load_embedder(model_name: str, device: str):
 
 
 def embed_text(embedder, text: str):
+    """ Devuelve el embedding del texto como una lista de floats. """
     return embedder.encode(text, convert_to_numpy=True, normalize_embeddings=True).tolist()
 
 
 def extract_text_from_pdf(path: str) -> List[Tuple[int, str]]:
+    """ Extrae el texto de cada página del PDF y devuelve una lista de tuplas (número_de_página, texto). """
     pages = []
     with pdfplumber.open(path) as pdf:
         for i, page in enumerate(pdf.pages):
@@ -63,6 +65,7 @@ def extract_text_from_pdf(path: str) -> List[Tuple[int, str]]:
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """ Divide el texto en chunks de tamaño chunk_size con overlap opcional. """
     words = text.split()
     chunks = []
     current = []
@@ -91,6 +94,7 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
 
 
 def ingest_pdf_to_chromadb(pdf_path: str, collection, embedder, chunk_size: int = 1000, overlap: int = 200):
+    """ Ingesta un PDF en una colección de ChromaDB, dividiendo el texto en chunks y almacenando embeddings. """
     pages = extract_text_from_pdf(pdf_path)
     total = 0
     for page_number, page_text in pages:
@@ -111,11 +115,12 @@ def ingest_pdf_to_chromadb(pdf_path: str, collection, embedder, chunk_size: int 
 
 
 def retrieve_context(collection, embedder, query: str, n_results: int = 3) -> str:
+    """ Recupera el contexto relevante de la colección para la consulta dada. """
     query_emb = embed_text(embedder, query)
     results = collection.query(query_embeddings=[query_emb], n_results=n_results)
     docs = results.get('documents', [])
     if docs and len(docs) > 0:
-        # documents usually a list of lists
+        # tomar el primer conjunto de documentos (para la primera consulta)
         first = docs[0]
         if isinstance(first, list):
             return " ".join(first)
@@ -124,6 +129,7 @@ def retrieve_context(collection, embedder, query: str, n_results: int = 3) -> st
 
 
 def rag_query_stream(question: str, collection, embedder, temperature: float, top_k: int = None, top_p: float = None, seed: int = None):
+    """ Realiza una consulta RAG y devuelve un generador que emite la respuesta incrementalmente. """
     context = retrieve_context(collection, embedder, question)
     prompt = f"""
     Usa el siguiente contexto para responder la pregunta:
@@ -155,7 +161,7 @@ def rag_query_stream(question: str, collection, embedder, temperature: float, to
         if delta:
             yield delta
 
-
+# Main Streamlit app
 def main():
     # Estilos personalizados con color base #2991AB y degradados
     st.markdown(
@@ -212,7 +218,7 @@ def main():
     )
     st.title("RAG con Qwen3 — Streamlit")
 
-    # Sidebar controls
+    # controles en la sidebar
     st.sidebar.header("Configuración")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     st.sidebar.write(f"Dispositivo detectado: {device}")
