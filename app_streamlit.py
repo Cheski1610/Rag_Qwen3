@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 from litellm import completion
 import chromadb
@@ -6,14 +7,62 @@ import torch
 import pdfplumber
 import uuid
 import tempfile
-from typing import List, Tuple
+from typing import Generator, List, Optional, Tuple
+
+
+def _env_base(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip().rstrip("/")
+    return default
 
 
 st.set_page_config(page_title="RAG Qwen3 - Streamlit", layout="wide")
 
-# Model names (mostrados de forma estática en la UI)
 EMBED_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
-GEN_MODEL_NAME = "ollama/Qwen3:8B"
+DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL_ID", "ollama/Qwen3:8B")
+DEFAULT_OLLAMA_BASE = _env_base("OLLAMA_API_BASE", "http://localhost:11434")
+DEFAULT_GITHUB_MODEL = os.environ.get("GITHUB_MODEL_ID", "gpt-4o-mini")
+DEFAULT_GITHUB_BASE = _env_base("GITHUB_MODELS_API_BASE", "https://api.githubcopilot.com/v1")
+DEFAULT_CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL_ID", "cerebras/qwen-3-32b")
+DEFAULT_CEREBRAS_BASE = _env_base("CEREBRAS_API_BASE", "https://api.cerebras.ai/v1")
+PROVIDER_OPTIONS = ("Ollama (local)", "GitHub Models", "Cerebras")
+
+
+def get_secret_or_env(name: str) -> Optional[str]:
+    """Devuelve secretos priorizando variables de entorno y luego st.secrets."""
+    try:
+        return os.environ.get(name)
+    except (AttributeError, KeyError):
+        return st.secrets[name]
+
+
+def build_completion_kwargs(prompt: str, llm_config: dict) -> dict:
+    """Prepara los argumentos para litellm según el proveedor seleccionado."""
+    params = {
+        "model": llm_config["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": llm_config["temperature"],
+        "stream": True,
+    }
+    if llm_config.get("api_base"):
+        params["api_base"] = llm_config["api_base"]
+    if llm_config.get("api_key"):
+        params["api_key"] = llm_config["api_key"]
+
+    provider = llm_config.get("provider")
+    if provider == "ollama":
+        if llm_config.get("top_k") is not None:
+            params["top_k"] = llm_config["top_k"]
+        if llm_config.get("top_p") is not None:
+            params["top_p"] = llm_config["top_p"]
+        if llm_config.get("seed") is not None:
+            params["seed"] = llm_config["seed"]
+    else:
+        if llm_config.get("top_p") is not None:
+            params["top_p"] = llm_config["top_p"]
+
+    return params
 
 
 @st.cache_resource
@@ -128,9 +177,9 @@ def retrieve_context(collection, embedder, query: str, n_results: int = 3) -> st
     return ""
 
 
-def rag_query_stream(question: str, collection, embedder, temperature: float, top_k: int = None, top_p: float = None, seed: int = None):
-    """ Realiza una consulta RAG y devuelve un generador que emite la respuesta incrementalmente. """
-    context = retrieve_context(collection, embedder, question)
+def rag_query_stream(question: str, collection, embedder, llm_config: dict, n_results: int) -> Generator[str, None, None]:
+    """Genera la respuesta del modelo en streaming usando la configuración indicada."""
+    context = retrieve_context(collection, embedder, question, n_results=n_results)
     prompt = f"""
     Usa el siguiente contexto para responder la pregunta:
 
@@ -138,24 +187,8 @@ def rag_query_stream(question: str, collection, embedder, temperature: float, to
 
     Pregunta: {question}
     """
-    # Construir kwargs dinámicamente para no pasar parámetros no deseados
-    params = {
-        "model": GEN_MODEL_NAME,
-        "messages": [{"role": "user", "content": prompt}],
-        "api_base": "http://localhost:11434",
-        "temperature": temperature,
-        "stream": True,
-    }
-    # sólo incluir top_k si se ha especificado y es mayor que 0
-    if top_k is not None and int(top_k) > 0:
-        params["top_k"] = int(top_k)
-    if top_p is not None:
-        params["top_p"] = top_p
-    if seed is not None and seed >= 0:
-        params["seed"] = int(seed)
-
+    params = build_completion_kwargs(prompt, llm_config)
     response = completion(**params)
-    # generator -> yield incremental text
     for chunk in response:
         delta = chunk["choices"][0]["delta"].get("content", "")
         if delta:
@@ -222,12 +255,102 @@ def main():
     st.sidebar.header("Configuración")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     st.sidebar.write(f"Dispositivo detectado: {device}")
-    st.sidebar.markdown(f"**Modelo:** {GEN_MODEL_NAME}")
+
+    provider_cache = st.session_state.setdefault("provider_cache", {})
+    default_provider = st.session_state.get("llm_provider", PROVIDER_OPTIONS[0])
+    provider_index = PROVIDER_OPTIONS.index(default_provider) if default_provider in PROVIDER_OPTIONS else 0
+    provider_label = st.sidebar.selectbox("Proveedor de modelo", PROVIDER_OPTIONS, index=provider_index)
+    st.session_state.llm_provider = provider_label
+
     temp = st.sidebar.slider("Temperatura", min_value=0.0, max_value=2.0, value=0.1, step=0.1)
     top_k = st.sidebar.slider("top_k (núm. de tokens candidatos)", min_value=0, max_value=100, value=0, step=1)
     top_p = st.sidebar.slider("top_p (probabilidad de tokens acumulada)", min_value=0.0, max_value=1.0, value=0.90, step=0.01)
     seed_input = st.sidebar.number_input("Seed (enter -1 para aleatorio/no establecido)", min_value=-1, value=-1, step=1)
     n_results = st.sidebar.number_input("Resultados a recuperar", min_value=1, max_value=10, value=3, step=1)
+
+    if provider_label == "Ollama (local)":
+        raw_model = st.sidebar.text_input("Modelo Ollama", value=provider_cache.get("ollama_model", DEFAULT_OLLAMA_MODEL))
+        provider_cache["ollama_model"] = raw_model
+        raw_base = st.sidebar.text_input("Base URL Ollama", value=provider_cache.get("ollama_api_base", DEFAULT_OLLAMA_BASE))
+        provider_cache["ollama_api_base"] = raw_base
+        model_id = raw_model.strip() or DEFAULT_OLLAMA_MODEL
+        api_base = (raw_base.strip() or DEFAULT_OLLAMA_BASE).rstrip("/")
+        llm_config = {
+            "provider": "ollama",
+            "label": provider_label,
+            "model": model_id,
+            "api_base": api_base,
+            "api_key": None,
+            "temperature": temp,
+            "top_k": int(top_k) if int(top_k) > 0 else None,
+            "top_p": top_p,
+            "seed": int(seed_input) if seed_input >= 0 else None,
+            "requires_api_key": False,
+        }
+    elif provider_label == "GitHub Models":
+        raw_model = st.sidebar.text_input("Modelo GitHub", value=provider_cache.get("github_model", DEFAULT_GITHUB_MODEL))
+        provider_cache["github_model"] = raw_model
+        raw_base = st.sidebar.text_input("API base GitHub", value=provider_cache.get("github_api_base", DEFAULT_GITHUB_BASE))
+        provider_cache["github_api_base"] = raw_base
+        model_id = raw_model.strip() or DEFAULT_GITHUB_MODEL
+        api_base = (raw_base.strip() or DEFAULT_GITHUB_BASE).rstrip("/")
+        token_env = get_secret_or_env("GITHUB_MODELS_TOKEN")
+        if token_env and token_env.strip():
+            token = token_env.strip()
+            st.sidebar.caption("Token tomado de la variable 'GITHUB_MODELS_TOKEN'.")
+        else:
+            token_input = st.sidebar.text_input("Token GitHub Models", value=provider_cache.get("github_token", ""), type="password")
+            provider_cache["github_token"] = token_input
+            token = (token_input or "").strip()
+        llm_config = {
+            "provider": "github",
+            "label": provider_label,
+            "model": model_id,
+            "api_base": api_base,
+            "api_key": token,
+            "temperature": temp,
+            "top_k": None,
+            "top_p": top_p,
+            "seed": None,
+            "requires_api_key": True,
+        }
+    else:
+        raw_model = st.sidebar.text_input("Modelo Cerebras", value=provider_cache.get("cerebras_model", DEFAULT_CEREBRAS_MODEL))
+        provider_cache["cerebras_model"] = raw_model
+        raw_base = st.sidebar.text_input("API base Cerebras", value=provider_cache.get("cerebras_api_base", DEFAULT_CEREBRAS_BASE))
+        provider_cache["cerebras_api_base"] = raw_base
+        model_id = raw_model.strip() or DEFAULT_CEREBRAS_MODEL
+        api_base = (raw_base.strip() or DEFAULT_CEREBRAS_BASE).rstrip("/")
+        token_env = get_secret_or_env("CEREBRAS_API_KEY")
+        if token_env and token_env.strip():
+            token = token_env.strip()
+            st.sidebar.caption("Token tomado de la variable 'CEREBRAS_API_KEY'.")
+        else:
+            token_input = st.sidebar.text_input("Token Cerebras", value=provider_cache.get("cerebras_token", ""), type="password")
+            provider_cache["cerebras_token"] = token_input
+            token = (token_input or "").strip()
+        llm_config = {
+            "provider": "cerebras",
+            "label": provider_label,
+            "model": model_id,
+            "api_base": api_base,
+            "api_key": token,
+            "temperature": temp,
+            "top_k": None,
+            "top_p": top_p,
+            "seed": None,
+            "requires_api_key": True,
+        }
+
+    st.session_state.llm_config = llm_config
+
+    st.sidebar.markdown(f"**Modelo activo:** {llm_config['model']}")
+    if llm_config.get("api_base"):
+        st.sidebar.caption(f"Endpoint: {llm_config['api_base']}")
+    if llm_config.get("requires_api_key") and not llm_config.get("api_key"):
+        st.sidebar.warning("Este proveedor requiere un token válido.")
+    if llm_config.get("provider") != "ollama":
+        st.sidebar.caption("`top_k` solo aplica cuando usas Ollama.")
 
     uploaded = st.file_uploader("Sube un PDF para ingestar", type=["pdf"])
 
@@ -272,18 +395,26 @@ def main():
         st.sidebar.info(f"Embedder cargado desde: {st.session_state.embedder_source}")
 
     if st.button("Enviar pregunta"):
+        llm_config = st.session_state.get("llm_config")
         if not question.strip():
             st.warning("Escribe una pregunta antes de enviar.")
         elif not st.session_state.get('ready'):
             st.warning("No hay ninguna colección ingested. Sube e ingesta un PDF primero.")
+        elif not llm_config:
+            st.error("No se encontró la configuración del modelo. Actualiza la selección en la barra lateral.")
+        elif llm_config.get("requires_api_key") and not llm_config.get("api_key"):
+            st.warning("Configura un token válido para el proveedor seleccionado antes de preguntar.")
         else:
             placeholder = st.empty()
             output = ""
-            with st.spinner("Solicitando respuesta al modelo..."):
-                for delta in rag_query_stream(question, st.session_state.collection, st.session_state.embedder, temp, top_k=top_k, top_p=top_p, seed=seed_input if seed_input >= 0 else None):
-                    output += delta
-                    placeholder.markdown(output)
-            st.success("Respuesta completa")
+            try:
+                with st.spinner("Solicitando respuesta al modelo..."):
+                    for delta in rag_query_stream(question, st.session_state.collection, st.session_state.embedder, llm_config, n_results):
+                        output += delta
+                        placeholder.markdown(output)
+                st.success("Respuesta completa")
+            except Exception as exc:
+                st.error(f"Error al solicitar respuesta: {exc}")
 
     # Mostrar estado de la colección en la sidebar
     if st.session_state.get('ready'):

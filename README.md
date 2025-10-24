@@ -1,6 +1,6 @@
 # **RAG_Qwen3**
 
-Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (Retrieval-Augmented Generation) usando el modelo Qwen3 para embeddings y Ollama/Qwen3 para generación. A continuación se describen los archivos principales, su funcionalidad y las diferencias entre ellos.
+Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (Retrieval-Augmented Generation) usando el modelo Qwen3 para embeddings y distintos backends de generación (Ollama local, GitHub Models o Cerebras). A continuación se describen los archivos principales, su funcionalidad y las diferencias entre ellos.
 
 ## Archivos
 
@@ -12,7 +12,8 @@ Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (R
     - Implementa una función de recuperación de contexto simple (`retrieve_context`) y un flujo RAG (`rag_query`) que envía una prompt al modelo de generación (`completion`) y muestra la respuesta por consola en streaming.
   - Uso esperado: ejecutar desde consola para ingestar un PDF local y probar consultas interactivas.
   - Notas:
-    - En el script se usan valores explícitos como `top_k=40` en la llamada a `completion`.
+    - Puedes ajustar temperatura, `top_k`, `top_p` y el proveedor desde variables de entorno (`GEN_TEMPERATURE`, `GEN_TOP_K`, `GEN_TOP_P`, `GEN_MODEL_PROVIDER`).
+    - Soporta los mismos backends de generación que la app (Ollama, GitHub Models y Cerebras).
     - Está orientado a un flujo de demostración y a pasos manuales (no está integrado con UI).
 
 - `RAG_Qwen3.ipynb`
@@ -30,6 +31,7 @@ Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (R
     - Permite subir un PDF desde el navegador y guarda un temporal local.
     - Carga (con cache) un modelo de embeddings y crea una colección de ChromaDB donde ingesta los chunks del PDF con embeddings.
     - Panel lateral con controles ajustables: temperatura, `top_k`, `top_p`, seed y número de resultados a recuperar.
+    - Permite seleccionar el backend de generación (Ollama, GitHub Models o Cerebras) y configurar modelo/endpoint/token desde la UI.
     - Construye consultas RAG que combinan el contexto recuperado (desde ChromaDB) con una prompt enviada al modelo de generación y muestra la respuesta en streaming en la UI.
   - Diferencias importantes respecto a los otros archivos:
     - `app_streamlit.py` es una aplicación web con UI y estado de sesión; los otros son scripts/notebooks sin interfaz web.
@@ -49,8 +51,8 @@ Este repositorio contiene ejemplos y utilidades para construir un sistema RAG (R
   - `RAG_Qwen3.ipynb` → exploración, experimentación y documentación reproducible.
 
 - Manejo de parámetros:
-  - En `RAG_Qwen3.py` muchos parámetros están codificados (por ejemplo `top_k=40` en la llamada `completion`).
-  - En `app_streamlit.py` están expuestos en la UI y ahora `top_k=0` es el valor por defecto (omisión si 0).
+  - En `RAG_Qwen3.py` puedes ajustar proveedor y sampling mediante variables de entorno (`GEN_*`).
+  - En `app_streamlit.py` están expuestos en la UI y `top_k=0` sigue omitiéndose del payload cuando no se usa.
 
 ## Recomendaciones rápidas
 - Si quieres una demo rápida con UI, ejecuta:
@@ -64,5 +66,18 @@ python .\RAG_Qwen3.py
 ```
 
 - Para experimentar y documentar pasos reproductibles, abre `RAG_Qwen3.ipynb` en Jupyter o en VS Code.
+
+## Proveedores de modelos y credenciales
+
+La aplicación de Streamlit y el script CLI pueden trabajar con varios backends de generación:
+
+- **Ollama (local)**: configuración por defecto. Personaliza modelo y endpoint con `OLLAMA_MODEL_ID` y `OLLAMA_API_BASE`.
+- **GitHub Models**: define un token con `GITHUB_MODELS_TOKEN` (o `st.secrets`) y, si lo necesitas, ajusta `GITHUB_MODEL_ID` y `GITHUB_MODELS_API_BASE`.
+- **Cerebras**: establece `CEREBRAS_API_KEY` (o `st.secrets`) y opcionalmente `CEREBRAS_MODEL_ID` / `CEREBRAS_API_BASE`.
+
+Para reutilizar la misma configuración en el script, fija `GEN_MODEL_PROVIDER` en `ollama`, `github` o `cerebras`. Parámetros adicionales:
+
+- `GEN_TEMPERATURE`, `GEN_TOP_P` y `GEN_TOP_K` (solo aplica a Ollama) para ajustar la decodificación.
+- `GEN_CONTEXT_RESULTS` para definir cuántos chunks recuperar desde ChromaDB.
 
 ---

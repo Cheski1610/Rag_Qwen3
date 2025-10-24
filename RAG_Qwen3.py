@@ -1,5 +1,6 @@
 
 # 0. Importar Librerías
+import os
 from litellm import completion
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -7,6 +8,70 @@ import torch
 import pdfplumber
 import uuid
 from typing import List, Tuple
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _base_env(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw and raw.strip():
+        return raw.strip().rstrip("/")
+    return default.rstrip("/")
+
+
+GEN_PROVIDER = os.environ.get("GEN_MODEL_PROVIDER", "ollama").lower()
+if GEN_PROVIDER not in {"ollama", "github", "cerebras"}:
+    GEN_PROVIDER = "ollama"
+
+if GEN_PROVIDER == "github":
+    LLM_CONFIG = {
+        "provider": "github",
+        "model": os.environ.get("GITHUB_MODEL_ID", "gpt-4o-mini"),
+        "api_base": _base_env("GITHUB_MODELS_API_BASE", "https://api.githubcopilot.com/v1"),
+        "api_key": (os.environ.get("GITHUB_MODELS_TOKEN") or "").strip() or None,
+        "temperature": _float_env("GEN_TEMPERATURE", 0.1),
+        "top_p": _float_env("GEN_TOP_P", 0.9),
+    }
+elif GEN_PROVIDER == "cerebras":
+    LLM_CONFIG = {
+        "provider": "cerebras",
+        "model": os.environ.get("CEREBRAS_MODEL_ID", "cerebras/qwen-3-32b"),
+        "api_base": _base_env("CEREBRAS_API_BASE", "https://api.cerebras.ai/v1"),
+        "api_key": (os.environ.get("CEREBRAS_API_KEY") or "").strip() or None,
+        "temperature": _float_env("GEN_TEMPERATURE", 0.1),
+        "top_p": _float_env("GEN_TOP_P", 0.9),
+    }
+else:
+    LLM_CONFIG = {
+        "provider": "ollama",
+        "model": os.environ.get("OLLAMA_MODEL_ID", "ollama/Qwen3:8B"),
+        "api_base": _base_env("OLLAMA_API_BASE", "http://localhost:11434"),
+        "api_key": None,
+        "temperature": _float_env("GEN_TEMPERATURE", 0.1),
+        "top_p": _float_env("GEN_TOP_P", 0.7),
+    "top_k": _int_env("GEN_TOP_K", 40),
+    }
+
+
+CONTEXT_RESULTS = _int_env("GEN_CONTEXT_RESULTS", 3)
 
 # 1. Cargar model de embedding
 model_name = "Qwen/Qwen3-Embedding-0.6B"
@@ -94,42 +159,60 @@ def ingest_pdf_to_chromadb(pdf_path: str, collection, chunk_size: int = 1000, ov
 ingest_pdf_to_chromadb("C:/Users/josue/Downloads/Propuesta Políticas de Gobierno de Datos.pdf", collection, chunk_size=1000, overlap=200)
 
 # 4. Recuperar contexto
-def retrieve_context(query: str, n_results: int = 3) -> list:
+def retrieve_context(query: str, n_results: int = CONTEXT_RESULTS) -> str:
     query_emb = embed_text(query)
     results = collection.query(query_embeddings=[query_emb], n_results=n_results)
     return " ".join(results['documents'][0])
 
-# 5. RAG con Ollama
-def rag_query(query: str) -> str:
+# 5. RAG con proveedor configurable
+def _build_generation_kwargs(prompt: str) -> dict:
+    params = {
+        "model": LLM_CONFIG["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": LLM_CONFIG["temperature"],
+        "stream": True,
+    }
+    if LLM_CONFIG.get("api_base"):
+        params["api_base"] = LLM_CONFIG["api_base"]
+    if LLM_CONFIG.get("api_key"):
+        params["api_key"] = LLM_CONFIG["api_key"]
+
+    if LLM_CONFIG["provider"] == "ollama":
+        if LLM_CONFIG.get("top_p") is not None:
+            params["top_p"] = LLM_CONFIG["top_p"]
+        if LLM_CONFIG.get("top_k") is not None:
+            params["top_k"] = LLM_CONFIG["top_k"]
+    else:
+        if LLM_CONFIG.get("top_p") is not None:
+            params["top_p"] = LLM_CONFIG["top_p"]
+    return params
+
+
+def rag_query(query: str) -> None:
     context = retrieve_context(query)
-    promtp = f"""
+    prompt = f"""
     Usa el siguiente contexto para responder la pregunta:
 
     Contexto: {context}
 
     Pregunta: {query}
     """
-    response = completion(
-        model="ollama/Qwen3:8B",
-        messages=[{"role": "user", "content": promtp}],
-        api_base="http://localhost:11434",
-        temperature=0.1,
-        top_p=0.7,
-        top_k=40,
-        stream=True # Habilitar el streaming
-    )
-    # `response` ahora es un generador
+    if LLM_CONFIG["provider"] != "ollama" and not LLM_CONFIG.get("api_key"):
+        raise RuntimeError(
+            "El proveedor seleccionado requiere un token. Define la variable de entorno correspondiente antes de ejecutar la consulta."
+        )
+    response = completion(**_build_generation_kwargs(prompt))
     for chunk in response:
-        # Cada chunk contiene parte del texto
         delta = chunk["choices"][0]["delta"].get("content", "")
         if delta:
             print(delta, end="", flush=True)
-    print()  # salto de línea al final
+    print()
 
 # 6. Preguntar
 if __name__ == "__main__":
     pregunta = input("Escribe tu pregunta: ")
-    #print("Pregunta:", pregunta)
-    #respuesta = rag_query(pregunta)
+    if LLM_CONFIG["provider"] != "ollama" and not LLM_CONFIG.get("api_key"):
+        raise SystemExit("Falta el token del proveedor seleccionado. Revisa las variables de entorno antes de continuar.")
+    print(f"Proveedor: {LLM_CONFIG['provider']} | Modelo: {LLM_CONFIG['model']}")
     print("Respuesta:", end=" ")
     rag_query(pregunta)
