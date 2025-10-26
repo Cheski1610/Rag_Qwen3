@@ -67,6 +67,16 @@ python .\RAG_Qwen3.py
 
 - Para experimentar y documentar pasos reproductibles, abre `RAG_Qwen3.ipynb` en Jupyter o en VS Code.
 
+## Uso en GitHub Codespaces
+
+El repositorio incluye una carpeta `.devcontainer/` lista para Codespaces:
+
+- Al abrir el repo en GitHub Codespaces, VS Code utilizará la imagen definida en `Dockerfile` (Python 3.12) y ejecutará `pip install -r requirements.txt` automáticamente.
+- El puerto 8501 ya está reenviado; ejecuta `streamlit run app_streamlit.py` para exponer la UI y usa el panel **Ports** para abrirla en el navegador.
+- Codespaces no trae Ollama instalado; selecciona desde la app un backend remoto (GitHub Models o Cerebras) o ajusta `GEN_MODEL_PROVIDER` en el CLI.
+- Configura credenciales sensibles como **Codespaces secrets** antes de abrir el entorno (`GITHUB_MODELS_TOKEN`, `CEREBRAS_API_KEY`, etc.); el contenedor las leerá como variables de entorno.
+- Si necesitas comandos adicionales tras la creación, añade un script a `postCreateCommand` o ejecuta tareas manualmente dentro del Codespace.
+
 ## Proveedores de modelos y credenciales
 
 La aplicación de Streamlit y el script CLI pueden trabajar con varios backends de generación:
