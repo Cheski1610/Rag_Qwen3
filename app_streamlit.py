@@ -16,6 +16,9 @@ def _env_base(name: str, default: str) -> str:
         return value.strip().rstrip("/")
     return default
 
+# Cargar instrucciones
+with open("agents_es.md", "r", encoding="utf-8") as f:
+    agents_md = f.read()
 
 st.set_page_config(page_title="RAG Qwen3 - Streamlit", layout="wide")
 
@@ -41,7 +44,8 @@ def build_completion_kwargs(prompt: str, llm_config: dict) -> dict:
     """Prepara los argumentos para litellm según el proveedor seleccionado."""
     params = {
         "model": llm_config["model"],
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": agents_md},
+            {"role": "user", "content": prompt}],
         "temperature": llm_config["temperature"],
         "stream": True,
     }
