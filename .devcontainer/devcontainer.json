@@ -12,7 +12,7 @@
   "features": {
     "ghcr.io/devcontainers/features/git:1": {}
   },
-  "postCreateCommand": "python -m pip install --no-cache-dir -r requirements.txt",
+  "postCreateCommand": "",
   "forwardPorts": [8501],
   "portsAttributes": {
     "8501": {
